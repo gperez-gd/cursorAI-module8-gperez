@@ -1,0 +1,403 @@
+name: Full-Stack CI/CD (Optimized)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Cancel any in-progress run for the same branch when a new push arrives
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.11"
+
+# ─────────────────────────────────────────────────────────────────────
+# STAGE 1 — CI (frontend, backend, security run fully in parallel)
+# ─────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── Frontend: install → build → test (3 parallel shards) ──────────
+  frontend-ci:
+    name: "Frontend CI [shard ${{ matrix.shard }}/${{ strategy.job-total }}]"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false          # keep other shards running if one fails
+      matrix:
+        shard: [1, 2, 3]        # 3 parallel Jest runners → ~3× speedup
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # Cache the entire node_modules directory keyed on the lockfile.
+      # On a cache hit npm ci is skipped entirely (saves ~90 s on cold runners).
+      - name: Cache node_modules
+        id: npm-cache
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: node-modules-${{ runner.os }}-
+
+      - name: Install frontend dependencies
+        if: steps.npm-cache.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build React app
+        run: npm run build
+
+      # Each shard runs 1/3 of the test suite in parallel across runners
+      - name: Run Jest shard ${{ matrix.shard }}/3
+        run: |
+          npm test -- \
+            --watchAll=false \
+            --coverage \
+            --shard=${{ matrix.shard }}/${{ strategy.job-total }} \
+            --maxWorkers=2
+        env:
+          CI: true
+
+      - name: Upload coverage (shard ${{ matrix.shard }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage-shard-${{ matrix.shard }}
+          path: frontend/coverage/
+          retention-days: 7
+
+      # Only upload the build artifact once (from shard 1)
+      - name: Upload React build artifact
+        if: matrix.shard == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-build
+          path: frontend/build/
+          retention-days: 1
+
+  # ── Backend: install → test (pytest-xdist parallel workers) ────────
+  backend-ci:
+    name: Backend CI
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Cache the virtualenv keyed on requirements.txt so pip install is
+      # skipped on repeated runs with unchanged dependencies.
+      - name: Cache Python virtualenv
+        id: pip-cache
+        uses: actions/cache@v4
+        with:
+          path: backend/.venv
+          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
+
+      - name: Install backend dependencies
+        if: steps.pip-cache.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pip install pytest pytest-cov pytest-xdist
+
+      # pytest-xdist -n auto spawns one worker per CPU core (2 on ubuntu-latest)
+      - name: Run Flask tests (parallel workers)
+        run: |
+          .venv/bin/pytest \
+            -n auto \
+            --cov=app \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --tb=short
+        env:
+          FLASK_ENV: testing
+
+      - name: Upload backend coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage.xml
+          retention-days: 7
+
+  # ── Security scanning (runs in parallel with CI jobs) ──────────────
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── npm audit (zero-dependency, always available) ──────────────
+      - name: Set up Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Cache node_modules (security job)
+        id: npm-cache-sec
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: node-modules-${{ runner.os }}-
+
+      - name: Install frontend deps (cache miss)
+        if: steps.npm-cache-sec.outputs.cache-hit != 'true'
+        run: npm ci
+        working-directory: frontend
+
+      - name: npm audit (high & critical only)
+        run: npm audit --audit-level=high
+        working-directory: frontend
+        continue-on-error: true   # report but don't block; remove to enforce
+
+      # ── Snyk – JavaScript ──────────────────────────────────────────
+      - name: Snyk – scan frontend dependencies
+        uses: snyk/actions/node@master
+        continue-on-error: true   # remove to enforce gate
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --file=frontend/package.json
+
+      # ── Snyk – Python ─────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Snyk – scan backend dependencies
+        uses: snyk/actions/python-3.10@master
+        continue-on-error: true   # remove to enforce gate
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --file=backend/requirements.txt
+
+# ─────────────────────────────────────────────────────────────────────
+# STAGE 2 — Docker build (with layer caching via GitHub Actions cache)
+# ─────────────────────────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [frontend-ci, backend-ci]
+
+    permissions:
+      contents: read
+      packages: write   # required to push to GHCR
+
+    outputs:
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
+      backend-image: ${{ steps.meta-backend.outputs.tags }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download React build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: react-build
+          path: frontend/build/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Frontend image ─────────────────────────────────────────────
+      - name: Extract frontend image metadata
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/frontend
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build & push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          labels: ${{ steps.meta-frontend.outputs.labels }}
+          # GitHub Actions cache keeps previously built layers between runs
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      # ── Backend image ──────────────────────────────────────────────
+      - name: Extract backend image metadata
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/backend
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          labels: ${{ steps.meta-backend.outputs.labels }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+# ─────────────────────────────────────────────────────────────────────
+# STAGE 3 — Deploy (only on main, only after Docker build + security)
+# ─────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy – Production
+    runs-on: ubuntu-latest
+    needs: [docker-build, security-scan]
+
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Swap the step below for your provider's deploy command ──────
+      # Heroku  → uses: akhileshns/heroku-deploy@v3.13.15
+      # AWS ECS → aws ecs update-service --force-new-deployment
+      # Render  → curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
+      # Fly.io  → fly deploy --image <tag>
+      - name: Deploy application
+        run: |
+          echo "Deploying images to production..."
+          # TODO: replace with your actual deploy command
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          FRONTEND_IMAGE: ${{ needs.docker-build.outputs.frontend-image }}
+          BACKEND_IMAGE: ${{ needs.docker-build.outputs.backend-image }}
+
+      # ── Health check: poll the app endpoint until it responds 200 ───
+      - name: Health check (retry up to 5 min)
+        run: |
+          echo "Waiting for deployment to become healthy..."
+          DEPLOY_URL="${{ vars.DEPLOY_URL }}"
+          MAX_RETRIES=30      # 30 × 10 s = 5 min
+          RETRY_INTERVAL=10
+
+          for i in $(seq 1 $MAX_RETRIES); do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 5 --max-time 10 \
+              "${DEPLOY_URL}/health" || echo "000")
+
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Health check passed (attempt $i) — HTTP $HTTP_STATUS"
+              exit 0
+            fi
+
+            echo "Attempt $i/$MAX_RETRIES — HTTP $HTTP_STATUS, retrying in ${RETRY_INTERVAL}s..."
+            sleep $RETRY_INTERVAL
+          done
+
+          echo "Health check FAILED after $MAX_RETRIES attempts."
+          exit 1
+
+# ─────────────────────────────────────────────────────────────────────
+# STAGE 4 — Slack notification on any pipeline failure
+# ─────────────────────────────────────────────────────────────────────
+  notify-failure:
+    name: Slack – Notify Failure
+    runs-on: ubuntu-latest
+    # Run after every upstream job; trigger only when something failed
+    needs: [frontend-ci, backend-ci, security-scan, docker-build, deploy]
+    if: failure()
+
+    steps:
+      - name: Send Slack failure alert
+        uses: slackapi/slack-github-action@v2.1.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "#FF0000",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": ":red_circle: CI/CD Pipeline Failed"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Repository:*\n<${{ github.server_url }}/${{ github.repository }}|${{ github.repository }}>"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Branch:*\n`${{ github.ref_name }}`"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Triggered by:*\n${{ github.actor }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Commit:*\n<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|`${{ github.sha && substring(github.sha, 0, 7) }}`>"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "actions",
+                      "elements": [
+                        {
+                          "type": "button",
+                          "text": { "type": "plain_text", "text": "View Failed Run" },
+                          "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                          "style": "danger"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
