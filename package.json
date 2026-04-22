@@ -1,0 +1,43 @@
+{
+  "name": "cursorai-module8",
+  "version": "1.0.0",
+  "description": "Module 8 – Automated test suites for e-commerce checkout, REST API, and complete QA system",
+  "scripts": {
+    "test": "jest --runInBand",
+    "test:ex1": "jest Exercise_1",
+    "test:ex2": "jest Exercise_2",
+    "test:pom": "jest Exercise_4/tests/unit --coverage --coverageReporters json-summary text --coverageDirectory Exercise_4/reports/coverage",
+    "test:e2e": "npx playwright test Exercise_4/tests/e2e",
+    "qa:lint": "node Exercise_4/quality/eslint-report.js",
+    "qa:complexity": "node Exercise_4/quality/complexity-check.js --threshold 10",
+    "qa:zap": "node Exercise_4/security/zap-scan.js",
+    "qa:snyk": "node Exercise_4/security/snyk-scan.js",
+    "qa:perf": "k6 run Exercise_4/performance/checkout-load.js",
+    "qa:perf:api": "k6 run Exercise_4/performance/api-load.js",
+    "qa:dashboard": "node Exercise_4/reports/dashboard.js",
+    "qa:all": "bash Exercise_4/scripts/run-qa.sh",
+    "qa:all:skip-security": "bash Exercise_4/scripts/run-qa.sh --skip-security",
+    "qa:all:skip-perf": "bash Exercise_4/scripts/run-qa.sh --skip-security --skip-performance",
+    "qa:ci": "bash Exercise_4/scripts/run-qa.sh --ci"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testTimeout": 15000,
+    "testMatch": [
+      "**/Exercise_1/tests/**/*.test.js",
+      "**/Exercise_2/tests/**/*.test.js",
+      "**/Exercise_4/tests/unit/**/*.test.js"
+    ],
+    "coveragePathIgnorePatterns": [
+      "/node_modules/",
+      "/Exercise_4/tests/e2e/"
+    ]
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "axios": "^1.7.0",
+    "uuid": "^9.0.1",
+    "eslint": "^8.57.0",
+    "@playwright/test": "^1.44.0"
+  }
+}

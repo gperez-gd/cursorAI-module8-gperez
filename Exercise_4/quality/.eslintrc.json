@@ -1,0 +1,44 @@
+{
+  "env": {
+    "node": true,
+    "jest": true,
+    "es2021": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2021,
+    "sourceType": "commonjs"
+  },
+  "rules": {
+    "complexity":               ["error", { "max": 10 }],
+    "max-depth":                ["error", { "max": 4 }],
+    "max-lines":                ["warn",  { "max": 500, "skipBlankLines": true, "skipComments": true }],
+    "max-lines-per-function":   ["warn",  { "max": 50,  "skipBlankLines": true, "skipComments": true }],
+    "max-params":               ["warn",  { "max": 5 }],
+    "no-eval":                  "error",
+    "no-implied-eval":          "error",
+    "no-new-func":              "error",
+    "no-param-reassign":        "warn",
+    "no-var":                   "error",
+    "prefer-const":             "error",
+    "eqeqeq":                   ["error", "always"],
+    "no-unused-vars":           ["warn",  { "argsIgnorePattern": "^_" }],
+    "no-console":               "warn",
+    "no-debugger":              "error",
+    "no-duplicate-imports":     "error",
+    "no-shadow":                "warn",
+    "consistent-return":        "warn",
+    "guard-for-in":             "warn",
+    "no-loop-func":             "error",
+    "no-prototype-builtins":    "warn",
+    "no-restricted-syntax": [
+      "error",
+      { "selector": "WithStatement", "message": "with() is disallowed" }
+    ],
+    "semi":         ["error", "always"],
+    "quotes":       ["warn", "single", { "avoidEscape": true }],
+    "indent":       ["warn", 2, { "SwitchCase": 1 }],
+    "no-trailing-spaces":   "warn",
+    "eol-last":             "warn",
+    "no-multiple-empty-lines": ["warn", { "max": 2 }]
+  }
+}
