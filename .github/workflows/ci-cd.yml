@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# Cancel any in-progress run for the same branch when a new push arrives
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -18,7 +17,7 @@ env:
   PYTHON_VERSION: "3.11"
 
 # ─────────────────────────────────────────────────────────────────────
-# STAGE 1 — CI (frontend, backend, security run fully in parallel)
+# STAGE 1 — CI  (frontend, backend, security run fully in parallel)
 # ─────────────────────────────────────────────────────────────────────
 jobs:
 
@@ -28,13 +27,14 @@ jobs:
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: false          # keep other shards running if one fails
+      fail-fast: false
       matrix:
-        shard: [1, 2, 3]        # 3 parallel Jest runners → ~3× speedup
+        shard: [1, 2, 3]
 
+    # Fix 6: working-directory remapped from frontend/ to repo root
     defaults:
       run:
-        working-directory: frontend
+        working-directory: .
 
     steps:
       - name: Checkout code
@@ -45,24 +45,22 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # Cache the entire node_modules directory keyed on the lockfile.
-      # On a cache hit npm ci is skipped entirely (saves ~90 s on cold runners).
+      # Fix 6: cache path and lockfile key corrected to repo-root paths
       - name: Cache node_modules
         id: npm-cache
         uses: actions/cache@v4
         with:
-          path: frontend/node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
           restore-keys: node-modules-${{ runner.os }}-
 
-      - name: Install frontend dependencies
+      - name: Install dependencies
         if: steps.npm-cache.outputs.cache-hit != 'true'
         run: npm ci
 
-      - name: Build React app
+      - name: Build
         run: npm run build
 
-      # Each shard runs 1/3 of the test suite in parallel across runners
       - name: Run Jest shard ${{ matrix.shard }}/3
         run: |
           npm test -- \
@@ -77,16 +75,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: frontend-coverage-shard-${{ matrix.shard }}
-          path: frontend/coverage/
+          path: coverage/
           retention-days: 7
 
-      # Only upload the build artifact once (from shard 1)
-      - name: Upload React build artifact
+      # Fix 6: build output is dist/ (Vite), not build/
+      - name: Upload build artifact
         if: matrix.shard == 1
         uses: actions/upload-artifact@v4
         with:
           name: react-build
-          path: frontend/build/
+          path: dist/
           retention-days: 1
 
   # ── Backend: install → test (pytest-xdist parallel workers) ────────
@@ -94,9 +92,10 @@ jobs:
     name: Backend CI
     runs-on: ubuntu-latest
 
+    # Fix 6: working-directory remapped from backend/ to repo root
     defaults:
       run:
-        working-directory: backend
+        working-directory: .
 
     steps:
       - name: Checkout code
@@ -107,14 +106,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # Cache the virtualenv keyed on requirements.txt so pip install is
-      # skipped on repeated runs with unchanged dependencies.
+      # Fix 6: venv cache path corrected to repo-root
       - name: Cache Python virtualenv
         id: pip-cache
         uses: actions/cache@v4
         with:
-          path: backend/.venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('backend/requirements.txt') }}
+          path: .venv
+          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
           restore-keys: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
 
       - name: Install backend dependencies
@@ -125,7 +123,6 @@ jobs:
           .venv/bin/pip install -r requirements.txt
           .venv/bin/pip install pytest pytest-cov pytest-xdist
 
-      # pytest-xdist -n auto spawns one worker per CPU core (2 on ubuntu-latest)
       - name: Run Flask tests (parallel workers)
         run: |
           .venv/bin/pytest \
@@ -141,7 +138,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-coverage
-          path: backend/coverage.xml
+          path: coverage.xml
           retention-days: 7
 
   # ── Security scanning (runs in parallel with CI jobs) ──────────────
@@ -153,52 +150,50 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── npm audit (zero-dependency, always available) ──────────────
       - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # Fix 6: cache path and lockfile corrected to repo-root
       - name: Cache node_modules (security job)
         id: npm-cache-sec
         uses: actions/cache@v4
         with:
-          path: frontend/node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
           restore-keys: node-modules-${{ runner.os }}-
 
-      - name: Install frontend deps (cache miss)
+      - name: Install deps (cache miss)
         if: steps.npm-cache-sec.outputs.cache-hit != 'true'
         run: npm ci
-        working-directory: frontend
 
+      # Fix 9: continue-on-error removed — gate is now blocking
       - name: npm audit (high & critical only)
         run: npm audit --audit-level=high
-        working-directory: frontend
-        continue-on-error: true   # report but don't block; remove to enforce
 
-      # ── Snyk – JavaScript ──────────────────────────────────────────
+      # Fix 9: continue-on-error removed — Snyk gates are now blocking
       - name: Snyk – scan frontend dependencies
         uses: snyk/actions/node@master
-        continue-on-error: true   # remove to enforce gate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --file=frontend/package.json
+          # Fix 6: --file path corrected to repo-root package.json
+          args: --severity-threshold=high --file=package.json
 
-      # ── Snyk – Python ─────────────────────────────────────────────
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # Fix 9: continue-on-error removed — Snyk Python gate is now blocking
       - name: Snyk – scan backend dependencies
         uses: snyk/actions/python-3.10@master
-        continue-on-error: true   # remove to enforce gate
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          args: --severity-threshold=high --file=backend/requirements.txt
+          # Fix 6: --file path corrected to repo-root requirements.txt
+          args: --severity-threshold=high --file=requirements.txt
 
 # ─────────────────────────────────────────────────────────────────────
 # STAGE 2 — Docker build (with layer caching via GitHub Actions cache)
@@ -210,7 +205,7 @@ jobs:
 
     permissions:
       contents: read
-      packages: write   # required to push to GHCR
+      packages: write
 
     outputs:
       frontend-image: ${{ steps.meta-frontend.outputs.tags }}
@@ -224,7 +219,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: react-build
-          path: frontend/build/
+          # Fix 6: artifact was built into dist/ not build/
+          path: dist/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -236,7 +232,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Frontend image ─────────────────────────────────────────────
       - name: Extract frontend image metadata
         id: meta-frontend
         uses: docker/metadata-action@v5
@@ -250,15 +245,13 @@ jobs:
       - name: Build & push frontend image
         uses: docker/build-push-action@v6
         with:
-          context: frontend
+          context: .
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
-          # GitHub Actions cache keeps previously built layers between runs
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
 
-      # ── Backend image ──────────────────────────────────────────────
       - name: Extract backend image metadata
         id: meta-backend
         uses: docker/metadata-action@v5
@@ -272,7 +265,7 @@ jobs:
       - name: Build & push backend image
         uses: docker/build-push-action@v6
         with:
-          context: backend
+          context: .
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
@@ -280,10 +273,10 @@ jobs:
           cache-to: type=gha,scope=backend,mode=max
 
 # ─────────────────────────────────────────────────────────────────────
-# STAGE 3 — Deploy (only on main, only after Docker build + security)
+# STAGE 3 — Blue-Green Deploy (only on main, after Docker build + security)
 # ─────────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy – Production
+    name: Deploy – Blue/Green Production
     runs-on: ubuntu-latest
     needs: [docker-build, security-scan]
 
@@ -297,26 +290,53 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── Swap the step below for your provider's deploy command ──────
-      # Heroku  → uses: akhileshns/heroku-deploy@v3.13.15
-      # AWS ECS → aws ecs update-service --force-new-deployment
-      # Render  → curl -X POST ${{ secrets.RENDER_DEPLOY_HOOK }}
-      # Fly.io  → fly deploy --image <tag>
-      - name: Deploy application
+      # Fix 8 ── Step 1: Determine active slot ────────────────────────
+      # Queries /health for a `slot` field; defaults to "blue" if absent.
+      - name: Determine active slot
+        id: slot
         run: |
-          echo "Deploying images to production..."
-          # TODO: replace with your actual deploy command
+          CURRENT=$(curl -sf --connect-timeout 5 --max-time 10 \
+            "${{ vars.DEPLOY_URL }}/health" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('slot','blue'))" \
+            2>/dev/null || echo "blue")
+          NEW=$( [[ "$CURRENT" == "blue" ]] && echo "green" || echo "blue" )
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW"         >> "$GITHUB_OUTPUT"
+          echo "Active slot: $CURRENT → deploying to: $NEW"
+
+      # Fix 8 ── Step 2: Deploy to the inactive slot ──────────────────
+      # Uncomment the block that matches your deployment provider.
+      - name: Deploy to ${{ steps.slot.outputs.new }} slot
+        run: |
+          NEW_SLOT="${{ steps.slot.outputs.new }}"
+          FRONTEND_TAG="${{ needs.docker-build.outputs.frontend-image }}"
+          BACKEND_TAG="${{ needs.docker-build.outputs.backend-image }}"
+
+          echo "Deploying frontend=$FRONTEND_TAG  backend=$BACKEND_TAG  slot=$NEW_SLOT"
+
+          # ── AWS ECS ────────────────────────────────────────────────
+          # aws ecs update-service \
+          #   --cluster prod-${NEW_SLOT} --service app \
+          #   --force-new-deployment --region ${{ vars.AWS_REGION }}
+
+          # ── Fly.io ────────────────────────────────────────────────
+          # fly deploy --app app-${NEW_SLOT} \
+          #   --image $BACKEND_TAG --remote-only
+
+          # ── Kubernetes ────────────────────────────────────────────
+          # kubectl set image deployment/app-${NEW_SLOT} \
+          #   app=$BACKEND_TAG --namespace production
+
+          # ── Render ────────────────────────────────────────────────
+          # curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK_PREFIX }}-${NEW_SLOT}"
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
-          FRONTEND_IMAGE: ${{ needs.docker-build.outputs.frontend-image }}
-          BACKEND_IMAGE: ${{ needs.docker-build.outputs.backend-image }}
 
-      # ── Health check: poll the app endpoint until it responds 200 ───
-      - name: Health check (retry up to 5 min)
+      # Fix 8 ── Step 3: Health-check the new slot (3-minute window) ──
+      - name: Health-check ${{ steps.slot.outputs.new }} slot
         run: |
-          echo "Waiting for deployment to become healthy..."
           DEPLOY_URL="${{ vars.DEPLOY_URL }}"
-          MAX_RETRIES=30      # 30 × 10 s = 5 min
+          MAX_RETRIES=18    # 18 × 10 s = 3 min
           RETRY_INTERVAL=10
 
           for i in $(seq 1 $MAX_RETRIES); do
@@ -336,13 +356,47 @@ jobs:
           echo "Health check FAILED after $MAX_RETRIES attempts."
           exit 1
 
+      # Fix 8 ── Step 4: Promote new slot → live ──────────────────────
+      # Flip the load balancer / DNS weighted record / feature flag.
+      - name: Promote ${{ steps.slot.outputs.new }} → live
+        run: |
+          NEW_SLOT="${{ steps.slot.outputs.new }}"
+          echo "Switching traffic to $NEW_SLOT slot."
+
+          # ── AWS ALB target-group swap ──────────────────────────────
+          # aws elbv2 modify-listener \
+          #   --listener-arn ${{ secrets.ALB_LISTENER_ARN }} \
+          #   --default-actions Type=forward,TargetGroupArn=${{ secrets[format('TG_ARN_{0}', upper(NEW_SLOT))] }}
+
+          # ── Fly.io: update primary app alias ──────────────────────
+          # fly scale set --app app-primary --image-ref ${{ needs.docker-build.outputs.backend-image }}
+
+          # ── Kubernetes: update the stable VirtualService weight ────
+          # kubectl patch virtualservice app-vs --type=json \
+          #   -p "[{\"op\":\"replace\",\"path\":\"/spec/http/0/route/0/destination/host\",\"value\":\"app-${NEW_SLOT}\"}]"
+
+          echo "Traffic now routed to: $NEW_SLOT"
+
+      # Fix 8 ── Step 5: Mark old slot as standby ─────────────────────
+      - name: Mark ${{ steps.slot.outputs.current }} as standby
+        if: success()
+        run: |
+          echo "Slot '${{ steps.slot.outputs.current }}' is now standby — ready for instant rollback."
+
+      # Fix 8 ── Rollback guard: traffic unchanged on failure ─────────
+      - name: Rollback – keep ${{ steps.slot.outputs.current }} live
+        if: failure()
+        run: |
+          echo "Deploy to '${{ steps.slot.outputs.new }}' failed."
+          echo "Traffic remains on '${{ steps.slot.outputs.current }}' — no customer impact."
+          exit 1
+
 # ─────────────────────────────────────────────────────────────────────
 # STAGE 4 — Slack notification on any pipeline failure
 # ─────────────────────────────────────────────────────────────────────
   notify-failure:
     name: Slack – Notify Failure
     runs-on: ubuntu-latest
-    # Run after every upstream job; trigger only when something failed
     needs: [frontend-ci, backend-ci, security-scan, docker-build, deploy]
     if: failure()
 
@@ -382,7 +436,7 @@ jobs:
                         },
                         {
                           "type": "mrkdwn",
-                          "text": "*Commit:*\n<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|`${{ github.sha && substring(github.sha, 0, 7) }}`>"
+                          "text": "*Commit:*\n<${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|`${{ github.sha }}`>"
                         }
                       ]
                     },

@@ -203,7 +203,7 @@ function main() {
   console.log(`Report written to: ${path.relative(PROJECT_ROOT, REPORT_FILE)}`);
 
   const passed = printReport(allFunctions);
-  process.exitCode = passed ? 0 : 1;
+  process.exit(passed ? 0 : 1);
 }
 
 main();
