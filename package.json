@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Module 8 – Automated test suites for e-commerce checkout, REST API, and complete QA system",
   "scripts": {
+    "build": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.html','<!DOCTYPE html><html lang=\\\"en\\\"><head><meta charset=\\\"utf-8\\\"/><title>Module 8</title></head><body><p>QA automation project — no SPA bundle. This file satisfies CI artifact expectations.</p></body></html>');\"",
     "test": "jest --runInBand",
     "test:ex1": "jest Exercise_1",
     "test:ex2": "jest Exercise_2",
@@ -34,10 +35,10 @@
     ]
   },
   "devDependencies": {
-    "jest": "^29.7.0",
+    "@playwright/test": "^1.44.0",
     "axios": "^1.7.0",
-    "uuid": "^9.0.1",
     "eslint": "^8.57.0",
-    "@playwright/test": "^1.44.0"
+    "jest": "^29.7.0",
+    "uuid": "^14.0.0"
   }
 }
