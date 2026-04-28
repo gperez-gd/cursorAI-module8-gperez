@@ -366,7 +366,7 @@ jobs:
           # ── AWS ALB target-group swap ──────────────────────────────
           # aws elbv2 modify-listener \
           #   --listener-arn ${{ secrets.ALB_LISTENER_ARN }} \
-          #   --default-actions Type=forward,TargetGroupArn=${{ secrets[format('TG_ARN_{0}', upper(steps.slot.outputs.new))] }}
+          #   --default-actions Type=forward,TargetGroupArn=${{ case(steps.slot.outputs.new == 'blue', secrets.TG_ARN_BLUE, secrets.TG_ARN_GREEN) }}
 
           # ── Fly.io: update primary app alias ──────────────────────
           # fly scale set --app app-primary --image-ref ${{ needs.docker-build.outputs.backend-image }}
