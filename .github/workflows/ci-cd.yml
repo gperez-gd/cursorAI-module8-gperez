@@ -32,6 +32,12 @@ jobs:
     name: "Frontend CI [shard ${{ matrix.shard }}/${{ strategy.job-total }}]"
     runs-on: ubuntu-latest
 
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
     strategy:
       fail-fast: false
       matrix:
@@ -46,10 +52,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Checkout Module 7 ecommerce API (Exercise_2 integration tests)
+        uses: actions/checkout@v4
+        with:
+          repository: gperez-gd/cursorAI-module7-gperez
+          path: module7-api
+          ref: main
+
       - name: Set up Node.js ${{ env.NODE_VERSION }}
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       # Fix 6: cache path and lockfile key corrected to repo-root paths
       - name: Cache node_modules
@@ -67,6 +85,33 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install & seed Flask API, start server (port 3000)
+        run: |
+          set -euo pipefail
+          API_DIR="${GITHUB_WORKSPACE}/module7-api/cursorAI-module7-gperez-corrected/ecommerce_api"
+          test -d "$API_DIR" || { echo "Expected API at $API_DIR"; exit 1; }
+          python3 -m venv "${API_DIR}/.venv"
+          "${API_DIR}/.venv/bin/pip" install --upgrade pip -q
+          "${API_DIR}/.venv/bin/pip" install -q -r "${API_DIR}/requirements.txt"
+          export FLASK_ENV=development
+          export PORT=3000
+          export REDIS_URL=redis://127.0.0.1:6379/0
+          export DATABASE_URL=sqlite:////tmp/ecommerce_module8_ci.db
+          cd "$API_DIR"
+          "${API_DIR}/.venv/bin/python" seed.py
+          nohup "${API_DIR}/.venv/bin/python" run.py > /tmp/flask-module8-ci.log 2>&1 &
+          echo $! > /tmp/flask-module8-ci.pid
+          for i in $(seq 1 45); do
+            if curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null; then
+              echo "Flask API is up (attempt $i)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "--- Flask log ---"
+          cat /tmp/flask-module8-ci.log || true
+          exit 1
+
       - name: Run Jest shard ${{ matrix.shard }}/3
         run: |
           npm test -- \
@@ -75,6 +120,11 @@ jobs:
             --shard=${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           CI: true
+          BASE_URL: http://127.0.0.1:3000/api/v1
+          ADMIN_EMAIL: admin@example.com
+          ADMIN_PASSWORD: Admin1234!
+          USER_EMAIL: user@example.com
+          USER_PASSWORD: User1234!
 
       - name: Upload coverage (shard ${{ matrix.shard }})
         uses: actions/upload-artifact@v4
@@ -92,59 +142,12 @@ jobs:
           path: dist/
           retention-days: 1
 
-  # ── Backend: install → test (pytest-xdist parallel workers) ────────
+  # No Python package at repo root; Module 7 API is exercised via Jest in frontend-ci.
   backend-ci:
-    name: Backend CI
+    name: Backend CI (n/a – API from Module 7)
     runs-on: ubuntu-latest
-
-    # Fix 6: working-directory remapped from backend/ to repo root
-    defaults:
-      run:
-        working-directory: .
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      # Fix 6: venv cache path corrected to repo-root
-      - name: Cache Python virtualenv
-        id: pip-cache
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: venv-${{ runner.os }}-${{ env.PYTHON_VERSION }}-
-
-      - name: Install backend dependencies
-        if: steps.pip-cache.outputs.cache-hit != 'true'
-        run: |
-          python -m venv .venv
-          .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -r requirements.txt
-          .venv/bin/pip install pytest pytest-cov pytest-xdist
-
-      - name: Run Flask tests (parallel workers)
-        run: |
-          .venv/bin/pytest \
-            -n auto \
-            --cov=app \
-            --cov-report=xml \
-            --cov-report=term-missing \
-            --tb=short
-        env:
-          FLASK_ENV: testing
-
-      - name: Upload backend coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-coverage
-          path: coverage.xml
-          retention-days: 7
+      - run: echo "Skipping — Flask API is checked out and run during frontend-ci for Exercise_2."
 
   # ── Security scanning (runs in parallel with CI jobs) ──────────────
   security-scan:
@@ -187,17 +190,17 @@ jobs:
           args: --severity-threshold=high --file=package.json
 
       - name: Set up Python ${{ env.PYTHON_VERSION }}
+        if: hashFiles('requirements.txt') != ''
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # Fix 9: continue-on-error removed — Snyk Python gate is now blocking
       - name: Snyk – scan backend dependencies
+        if: hashFiles('requirements.txt') != ''
         uses: snyk/actions/python-3.10@master
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
-          # Fix 6: --file path corrected to repo-root requirements.txt
           args: --severity-threshold=high --file=requirements.txt
 
 # ─────────────────────────────────────────────────────────────────────
