@@ -72,8 +72,7 @@ jobs:
           npm test -- \
             --watchAll=false \
             --coverage \
-            --shard=${{ matrix.shard }}/${{ strategy.job-total }} \
-            --maxWorkers=2
+            --shard=${{ matrix.shard }}/${{ strategy.job-total }}
         env:
           CI: true
 
