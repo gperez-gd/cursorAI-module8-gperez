@@ -3,7 +3,7 @@
  * Generates isolated, realistic test data for each test run.
  */
 
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 /**
  * Creates a unique test user with a session token.
@@ -11,7 +11,7 @@ const { v4: uuidv4 } = require('uuid');
  * @returns {Promise<object>} user object with sessionToken, email, savedCardId, paypalToken
  */
 async function generateUser() {
-  const id = uuidv4();
+  const id = crypto.randomUUID();
   const email = `test+${id}@example.com`;
   // In a real environment these would call internal test APIs or seed the DB directly
   return {
