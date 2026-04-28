@@ -5,11 +5,12 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
-  # Cross-repo: module6 / module7 workflows must POST repository_dispatch to this repo.
+  # Cross-repo: module6 / module7 workflows POST repository_dispatch to this repo.
+  # Module 7 API source: https://github.com/gperez-gd/cursorAI-module7-gperez/tree/main/cursorAI-module7-gperez-corrected/ecommerce_api
   repository_dispatch:
     types:
       - module6-project-commit
-      - module7-corrected-commit
+      - cursorAI-module7-gperez-commit
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

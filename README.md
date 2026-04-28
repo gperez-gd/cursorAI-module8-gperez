@@ -26,6 +26,15 @@ cursorAI-module8-gperez/
 
 ---
 
+## Module 7 REST API (Exercise 2)
+
+Exercise 2 targets the Flask API from Module 7. Canonical location:
+
+- **GitHub:** [gperez-gd/cursorAI-module7-gperez](https://github.com/gperez-gd/cursorAI-module7-gperez) — API under `cursorAI-module7-gperez-corrected/ecommerce_api/`.
+- **Local clone example:** `module7-project/cursorAI-module7-gperez/cursorAI-module7-gperez-corrected/ecommerce_api/` (path inside the `cursorAI-module7-gperez` repository after `git clone`).
+
+---
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org/) v18 or higher
