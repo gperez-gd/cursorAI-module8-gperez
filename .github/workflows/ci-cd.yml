@@ -254,11 +254,19 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: docker/Dockerfile.frontend
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
+
+      - name: Checkout Module 7 ecommerce API (backend image)
+        uses: actions/checkout@v4
+        with:
+          repository: gperez-gd/cursorAI-module7-gperez
+          path: module7-api
+          ref: main
 
       - name: Extract backend image metadata
         id: meta-backend
@@ -273,7 +281,8 @@ jobs:
       - name: Build & push backend image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: module7-api/cursorAI-module7-gperez-corrected/ecommerce_api
+          file: docker/Dockerfile.backend
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}

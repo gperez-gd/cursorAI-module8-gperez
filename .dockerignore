@@ -1,0 +1,10 @@
+# Shrink frontend image build context (context is repo root)
+node_modules
+**/node_modules
+.git
+.github
+coverage
+Exercise_*
+module7-api
+*.md
+.cursor
