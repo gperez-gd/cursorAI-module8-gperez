@@ -299,7 +299,7 @@ jobs:
 
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'repository_dispatch')
 
-    # `environment.url` and job-level `env` cannot reference `secrets.*` (workflow parse error). Use `vars.DEPLOY_URL` for the deployment link; steps below merge var + secret in step `env` for curl/health.
+    # Without DEPLOY_URL, this job still runs as a documented simulation (course/demo): no HTTP, job succeeds. With DEPLOY_URL (Variable or Secret), slot + health use real requests. `environment.url` only supports vars, not secrets.
     environment:
       name: production
       url: ${{ vars.DEPLOY_URL }}
@@ -308,22 +308,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Fail fast with a clear message if production URL is missing (otherwise curl hits "/health" and every attempt is HTTP 000).
-      - name: Validate DEPLOY_URL
+      # Live: DEPLOY_URL set → real curl to /health. Simulated: unset → defaults + docs only (no server required).
+      - name: Resolve production deploy mode (live vs simulated)
+        id: mode
         env:
           DEPLOY_URL_VARS: ${{ vars.DEPLOY_URL }}
           DEPLOY_URL_SECRET: ${{ secrets.DEPLOY_URL }}
         run: |
           URL="${DEPLOY_URL_VARS:-$DEPLOY_URL_SECRET}"
-          if [ -z "$URL" ]; then
-            echo "::error::DEPLOY_URL is not set. Add it in ONE of these places (name must be exactly DEPLOY_URL):"
-            echo "  • Repo: Settings → Secrets and variables → Actions → Variables → New repository variable (also sets the deployment link above)"
-            echo "  • Or same path → Secrets → New repository secret (health/slot steps only; not shown on environment URL)"
-            echo "  • Or Environments → production → Environment variables (this job uses environment: production)"
-            echo "Example value: https://your-app.onrender.com"
-            exit 1
+          if [ -n "$URL" ]; then
+            echo "simulate=false" >> "$GITHUB_OUTPUT"
+            echo "Live mode: DEPLOY_URL is set (${#URL} characters)."
+          else
+            echo "simulate=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::DEPLOY_URL not set — simulated production deploy (no HTTP checks). Set Actions Variable or Secret DEPLOY_URL for live blue/green checks."
+            {
+              echo "## Simulated production deploy"
+              echo
+              echo "No **DEPLOY_URL** is configured, so this run documents the blue/green sequence only:"
+              echo "- **docker-build** still produced and pushed images."
+              echo "- Slot step assumes **current=blue** → deploy **green**."
+              echo "- Health check and traffic flip are **skipped** (no public URL)."
+              echo
+              echo "To run against a real host: add \`DEPLOY_URL\` (e.g. \`https://your-app.onrender.com\`) under *Settings → Secrets and variables → Actions* (Variable or Secret) or under *Environments → production → Environment variables*."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "DEPLOY_URL is configured (${#URL} characters)."
 
       # Fix 8 ── Step 1: Determine active slot ────────────────────────
       # Queries /health for a `slot` field; defaults to "blue" if absent.
@@ -333,6 +342,12 @@ jobs:
           DEPLOY_URL_VARS: ${{ vars.DEPLOY_URL }}
           DEPLOY_URL_SECRET: ${{ secrets.DEPLOY_URL }}
         run: |
+          if [ "${{ steps.mode.outputs.simulate }}" = "true" ]; then
+            echo "current=blue" >> "$GITHUB_OUTPUT"
+            echo "new=green" >> "$GITHUB_OUTPUT"
+            echo "Simulated: current=blue → deploying to green."
+            exit 0
+          fi
           BASE="${DEPLOY_URL_VARS:-$DEPLOY_URL_SECRET}"
           BASE="${BASE%/}"
           CURRENT=$(curl -sf --connect-timeout 5 --max-time 10 \
@@ -352,6 +367,9 @@ jobs:
           FRONTEND_TAG="${{ needs.docker-build.outputs.frontend-image }}"
           BACKEND_TAG="${{ needs.docker-build.outputs.backend-image }}"
 
+          if [ "${{ steps.mode.outputs.simulate }}" = "true" ]; then
+            echo "Simulated deploy: would roll images to slot=$NEW_SLOT (uncomment provider block below for real deploy)."
+          fi
           echo "Deploying frontend=$FRONTEND_TAG  backend=$BACKEND_TAG  slot=$NEW_SLOT"
 
           # ── AWS ECS ────────────────────────────────────────────────
@@ -378,6 +396,10 @@ jobs:
           DEPLOY_URL_VARS: ${{ vars.DEPLOY_URL }}
           DEPLOY_URL_SECRET: ${{ secrets.DEPLOY_URL }}
         run: |
+          if [ "${{ steps.mode.outputs.simulate }}" = "true" ]; then
+            echo "Simulated health check: would poll GET \$DEPLOY_URL/health until HTTP 200 (skipped)."
+            exit 0
+          fi
           DEPLOY_URL="${DEPLOY_URL_VARS:-$DEPLOY_URL_SECRET}"
           DEPLOY_URL="${DEPLOY_URL%/}"   # strip trailing slash so we never request //health
           HEALTH_URL="${DEPLOY_URL}/health"
@@ -408,6 +430,9 @@ jobs:
       - name: Promote ${{ steps.slot.outputs.new }} → live
         run: |
           NEW_SLOT="${{ steps.slot.outputs.new }}"
+          if [ "${{ steps.mode.outputs.simulate }}" = "true" ]; then
+            echo "Simulated promote: would route live traffic to $NEW_SLOT (no load balancer / DNS change in this template)."
+          fi
           echo "Switching traffic to $NEW_SLOT slot."
 
           # ── AWS ALB target-group swap ──────────────────────────────
