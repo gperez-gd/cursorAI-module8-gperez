@@ -441,7 +441,8 @@ jobs:
           #   --default-actions Type=forward,TargetGroupArn=${{ case(steps.slot.outputs.new == 'blue', secrets.TG_ARN_BLUE, secrets.TG_ARN_GREEN) }}
 
           # ── Fly.io: update primary app alias ──────────────────────
-          # fly scale set --app app-primary --image-ref ${{ needs.docker-build.outputs.backend-image }}
+          # fly scale set --app app-primary --image-ref "$BACKEND_TAG"
+          # Do not paste needs.docker-build.outputs.backend-image into a single-line # comment: metadata tags are newline-separated; extra lines would run as commands.
 
           # ── Kubernetes: update the stable VirtualService weight ────
           # kubectl patch virtualservice app-vs --type=json \
