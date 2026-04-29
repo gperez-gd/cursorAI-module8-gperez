@@ -299,13 +299,10 @@ jobs:
 
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'repository_dispatch')
 
-    # Prefer non-empty Variable; else Secret named DEPLOY_URL (common mix-up). Environment-scoped vars map to vars.DEPLOY_URL when this job uses `environment: production`.
-    env:
-      DEPLOY_BASE_URL: ${{ vars.DEPLOY_URL != '' && vars.DEPLOY_URL || secrets.DEPLOY_URL }}
-
+    # `environment.url` and job-level `env` cannot reference `secrets.*` (workflow parse error). Use `vars.DEPLOY_URL` for the deployment link; steps below merge var + secret in step `env` for curl/health.
     environment:
       name: production
-      url: ${{ vars.DEPLOY_URL != '' && vars.DEPLOY_URL || secrets.DEPLOY_URL }}
+      url: ${{ vars.DEPLOY_URL }}
 
     steps:
       - name: Checkout code
@@ -313,12 +310,15 @@ jobs:
 
       # Fail fast with a clear message if production URL is missing (otherwise curl hits "/health" and every attempt is HTTP 000).
       - name: Validate DEPLOY_URL
+        env:
+          DEPLOY_URL_VARS: ${{ vars.DEPLOY_URL }}
+          DEPLOY_URL_SECRET: ${{ secrets.DEPLOY_URL }}
         run: |
-          URL="${DEPLOY_BASE_URL:-}"
+          URL="${DEPLOY_URL_VARS:-$DEPLOY_URL_SECRET}"
           if [ -z "$URL" ]; then
             echo "::error::DEPLOY_URL is not set. Add it in ONE of these places (name must be exactly DEPLOY_URL):"
-            echo "  • Repo: Settings → Secrets and variables → Actions → Variables → New repository variable"
-            echo "  • Or same path → Secrets → New repository secret (workflow accepts either)"
+            echo "  • Repo: Settings → Secrets and variables → Actions → Variables → New repository variable (also sets the deployment link above)"
+            echo "  • Or same path → Secrets → New repository secret (health/slot steps only; not shown on environment URL)"
             echo "  • Or Environments → production → Environment variables (this job uses environment: production)"
             echo "Example value: https://your-app.onrender.com"
             exit 1
@@ -329,8 +329,12 @@ jobs:
       # Queries /health for a `slot` field; defaults to "blue" if absent.
       - name: Determine active slot
         id: slot
+        env:
+          DEPLOY_URL_VARS: ${{ vars.DEPLOY_URL }}
+          DEPLOY_URL_SECRET: ${{ secrets.DEPLOY_URL }}
         run: |
-          BASE="${DEPLOY_BASE_URL%/}"
+          BASE="${DEPLOY_URL_VARS:-$DEPLOY_URL_SECRET}"
+          BASE="${BASE%/}"
           CURRENT=$(curl -sf --connect-timeout 5 --max-time 10 \
             "${BASE}/health" \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('slot','blue'))" \
@@ -370,8 +374,11 @@ jobs:
 
       # Fix 8 ── Step 3: Health-check the new slot (3-minute window) ──
       - name: Health-check ${{ steps.slot.outputs.new }} slot
+        env:
+          DEPLOY_URL_VARS: ${{ vars.DEPLOY_URL }}
+          DEPLOY_URL_SECRET: ${{ secrets.DEPLOY_URL }}
         run: |
-          DEPLOY_URL="${DEPLOY_BASE_URL}"
+          DEPLOY_URL="${DEPLOY_URL_VARS:-$DEPLOY_URL_SECRET}"
           DEPLOY_URL="${DEPLOY_URL%/}"   # strip trailing slash so we never request //health
           HEALTH_URL="${DEPLOY_URL}/health"
           MAX_RETRIES=18    # 18 × 10 s = 3 min
