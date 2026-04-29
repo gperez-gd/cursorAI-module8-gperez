@@ -307,6 +307,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Fail fast with a clear message if production URL is missing (otherwise curl hits "/health" and every attempt is HTTP 000).
+      - name: Validate DEPLOY_URL
+        run: |
+          URL="${{ vars.DEPLOY_URL }}"
+          if [ -z "$URL" ]; then
+            echo "::error::Set repository variable DEPLOY_URL (Settings → Secrets and variables → Actions → Variables). Example: https://your-app.example.com — no trailing slash required."
+            exit 1
+          fi
+          echo "DEPLOY_URL is configured (length ${#URL} chars)."
+
       # Fix 8 ── Step 1: Determine active slot ────────────────────────
       # Queries /health for a `slot` field; defaults to "blue" if absent.
       - name: Determine active slot
@@ -353,13 +363,17 @@ jobs:
       - name: Health-check ${{ steps.slot.outputs.new }} slot
         run: |
           DEPLOY_URL="${{ vars.DEPLOY_URL }}"
+          DEPLOY_URL="${DEPLOY_URL%/}"   # strip trailing slash so we never request //health
+          HEALTH_URL="${DEPLOY_URL}/health"
           MAX_RETRIES=18    # 18 × 10 s = 3 min
           RETRY_INTERVAL=10
 
           for i in $(seq 1 $MAX_RETRIES); do
-            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            # Do not use `|| echo 000` here — curl already prints 000 on failure; doubling produced HTTP 000000 in logs.
+            HTTP_STATUS=$(curl -sS -o /dev/null -w "%{http_code}" \
               --connect-timeout 5 --max-time 10 \
-              "${DEPLOY_URL}/health" || echo "000")
+              "$HEALTH_URL" 2>/dev/null || true)
+            [ -z "$HTTP_STATUS" ] && HTTP_STATUS="000"
 
             if [ "$HTTP_STATUS" = "200" ]; then
               echo "Health check passed (attempt $i) — HTTP $HTTP_STATUS"
